@@ -172,7 +172,6 @@ async function renderSignedIn() {
   renderPeople();
   if (adminMode) {
     await renderAdminPanel();
-    adminRefreshTimer = setInterval(() => { if (activeView === 'admin') renderAdminPanel(); }, 5000);
     return;
   }
   const title = document.querySelector('#catalogTitle');
@@ -208,7 +207,8 @@ async function renderSignedIn() {
 async function renderAdminPanel() {
   const panel = document.querySelector('#adminPanel');
   if (!panel || !isAdmin) return;
-  panel.innerHTML = '<section class="auth-card"><p class="hint">Actualizando intercambios…</p></section>';
+  const hasContent = Boolean(panel.innerHTML.trim());
+  if (!hasContent) panel.innerHTML = '<section class="auth-card"><p class="hint">Cargando panel…</p></section>';
   const [{ data, error }, { data: openState, error: stateError }, { data: productRows, error: productsError }] = await Promise.all([
     supabase.rpc('get_admin_exchange_stats'),
     supabase.rpc('get_event_status'),
@@ -548,6 +548,7 @@ async function refreshLiveData() {
       if (oldProfiles !== newProfiles) {
         profiles = data;
         renderPeople();
+        if (activeView === 'admin') renderAdminPanel();
       }
     }
 
