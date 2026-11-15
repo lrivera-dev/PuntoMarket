@@ -6,6 +6,7 @@ let session = null;
 let profile = null;
 let profiles = [];
 let isAdmin = false;
+let eventProfilesOpen = false;
 let activeView = 'people';
 let selectedProfile = null;
 let visibleProducts = [];
@@ -189,7 +190,9 @@ async function renderSignedIn() {
   if (!selectedProfile) {
     title.textContent = 'Elige un perfil';
     count.textContent = '';
-    grid.innerHTML = '<div class="empty">Aquí solo aparecen perfiles. Abre el tuyo para mostrar tus objetos, o entra al perfil de alguien para pedir permiso para ver su catálogo.</div>';
+    grid.innerHTML = !eventProfilesOpen && !isAdmin
+      ? '<div class="empty">Los perfiles estarán disponibles cuando el admin abra el evento. Mientras tanto, puedes preparar tu catálogo desde “Mi catálogo”.</div>'
+      : '<div class="empty">Aquí solo aparecen perfiles. Abre el tuyo para mostrar tus objetos, o entra al perfil de alguien para pedir permiso para ver su catálogo.</div>';
     return;
   }
   if (selectedProfile.id === profile.id) {
@@ -198,8 +201,10 @@ async function renderSignedIn() {
     return;
   }
   title.textContent = `Catálogo de ${selectedProfile.display_name}`;
-  let allowed = false;
-  try { allowed = await accessFor(selectedProfile.id); } catch (error) { return showGridError(error); }
+  let allowed = isAdmin;
+  if (!isAdmin) {
+    try { allowed = await accessFor(selectedProfile.id); } catch (error) { return showGridError(error); }
+  }
   selectedAccessGranted = allowed;
   if (!allowed) {
     count.textContent = '';
@@ -216,7 +221,18 @@ async function renderAdminPanel() {
   const panel = document.querySelector('#adminPanel');
   if (!panel || !isAdmin) return;
   panel.innerHTML = '<section class="auth-card"><p class="hint">Actualizando intercambios…</p></section>';
-  const { data, error } = await supabase.rpc('get_admin_exchange_stats');
+  const [{ data, error }, { data: openState, error: stateError }, { data: productRows, error: productsError }] = await Promise.all([
+    supabase.rpc('get_admin_exchange_stats'),
+    supabase.rpc('get_event_status'),
+    supabase.from('products').select('owner_id, name').order('created_at', { ascending: false })
+  ]);
+  if (stateError || productsError) {
+    const problem = stateError || productsError;
+    panel.innerHTML = `<section class="auth-card"><h2>No se pudo cargar el panel</h2><p class="error">${esc(problem.message)}</p><button class="button-secondary" id="refreshAdminPanel">Reintentar</button></section>`;
+    panel.querySelector('#refreshAdminPanel').onclick = renderAdminPanel;
+    return;
+  }
+  eventProfilesOpen = Boolean(openState);
   if (error) {
     panel.innerHTML = `<section class="auth-card"><h2>No se pudo cargar el panel</h2><p class="error">${esc(error.message)}</p><button class="button-secondary" id="refreshAdminPanel">Reintentar</button></section>`;
     panel.querySelector('#refreshAdminPanel').onclick = renderAdminPanel;
@@ -225,8 +241,25 @@ async function renderAdminPanel() {
   const rows = data || [];
   const totalByProfile = rows.reduce((sum, row) => sum + Number(row.completed_exchanges || 0), 0);
   const totalExchanges = Math.floor(totalByProfile / 2);
-  panel.innerHTML = `<div class="admin-heading"><div><div class="eyebrow">Administración</div><h1>Intercambios realizados</h1><p>Se cuenta un intercambio cuando la propuesta se acepta. Aunque incluya varios objetos, cuenta como un intercambio.</p></div><button class="button-secondary" id="refreshAdminPanel">↻ Actualizar</button></div><div class="admin-summary"><article><span>Total de intercambios</span><strong>${totalExchanges}</strong></article><article><span>Participantes</span><strong>${rows.length}</strong></article></div><div class="admin-table-wrap"><table class="admin-table"><thead><tr><th>Participante</th><th>Intercambios realizados</th></tr></thead><tbody>${rows.map((row) => `<tr><td>${esc(row.display_name)}</td><td><b>${Number(row.completed_exchanges || 0)}</b></td></tr>`).join('') || '<tr><td colspan="2">Aún no hay perfiles.</td></tr>'}</tbody></table></div>`;
+  const itemCounts = new Map();
+  for (const item of productRows || []) itemCounts.set(item.owner_id, (itemCounts.get(item.owner_id) || 0) + 1);
+  panel.innerHTML = `<div class="admin-heading"><div><div class="eyebrow">Administración</div><h1>Control del evento</h1><p>${eventProfilesOpen ? 'Los perfiles están abiertos para todos.' : 'Los participantes pueden preparar sus catálogos; solo tú puedes revisar perfiles y objetos.'}</p></div><button class="button-primary" id="toggleProfilesButton">${eventProfilesOpen ? 'Cerrar perfiles para todos' : 'Abrir perfiles para todos'}</button></div><div class="admin-summary"><article><span>Total de intercambios</span><strong>${totalExchanges}</strong></article><article><span>Participantes</span><strong>${rows.length}</strong></article></div><h2>Perfiles y objetos</h2><div class="admin-table-wrap"><table class="admin-table"><thead><tr><th>Participante</th><th>Objetos en su catálogo</th><th>Revisión</th></tr></thead><tbody>${rows.map((row) => `<tr><td>${esc(row.display_name)}</td><td>${itemCounts.get(row.profile_id) || 0}</td><td><button class="button-secondary" data-admin-profile="${row.profile_id}">Ver catálogo</button></td></tr>`).join('') || '<tr><td colspan="3">Aún no hay perfiles.</td></tr>'}</tbody></table></div><h2 style="margin-top:24px">Intercambios realizados</h2><div class="admin-table-wrap"><table class="admin-table"><thead><tr><th>Participante</th><th>Intercambios realizados</th></tr></thead><tbody>${rows.map((row) => `<tr><td>${esc(row.display_name)}</td><td><b>${Number(row.completed_exchanges || 0)}</b></td></tr>`).join('') || '<tr><td colspan="2">Aún no hay perfiles.</td></tr>'}</tbody></table></div><div style="margin-top:14px"><button class="button-secondary" id="refreshAdminPanel">↻ Actualizar</button></div>`;
   panel.querySelector('#refreshAdminPanel').onclick = renderAdminPanel;
+  panel.querySelector('#toggleProfilesButton').onclick = async (event) => {
+    const button = event.currentTarget;
+    button.disabled = true;
+    const { data: nextState, error: toggleError } = await supabase.rpc('set_event_profiles_open', { p_open: !eventProfilesOpen });
+    if (toggleError) {
+      button.disabled = false;
+      return toast(toggleError.message);
+    }
+    eventProfilesOpen = Boolean(nextState);
+    const { data: updatedProfiles } = await supabase.from('profiles').select('id, display_name').order('display_name');
+    if (updatedProfiles) profiles = updatedProfiles;
+    toast(eventProfilesOpen ? 'Perfiles abiertos para todos.' : 'Perfiles cerrados para los participantes.');
+    await renderAdminPanel();
+  };
+  panel.querySelectorAll('[data-admin-profile]').forEach((button) => button.onclick = () => openProfile(button.dataset.adminProfile));
 }
 
 function showGridError(error) { document.querySelector('#productGrid').innerHTML = `<div class="error">${esc(error?.message || error)}</div>`; }
@@ -236,7 +269,7 @@ async function loadProducts(ownerId, own) {
   if (error) return showGridError(error);
   visibleProducts = data || [];
   document.querySelector('#productCount').textContent = `${visibleProducts.length} ${visibleProducts.length === 1 ? 'objeto' : 'objetos'}`;
-  const otherCatalog = !own && activeView === 'person';
+  const otherCatalog = !own && activeView === 'person' && !isAdmin;
   const grid = document.querySelector('#productGrid');
   if (!visibleProducts.length) {
     grid.innerHTML = '<div class="empty">Este catálogo todavía no tiene objetos.</div>';
@@ -246,7 +279,7 @@ async function loadProducts(ownerId, own) {
   let imagePermissionError = false;
   let imageLoadErrorShown = false;
   await Promise.all(visibleProducts.filter((product) => product.image_path).map(async (item) => {
-    const { data: image, error: imageError } = await supabase.storage.from('product-images').createSignedUrl(item.image_path, 1800);
+    const { data: image, error: imageError } = await supabase.storage.from('product-images').createSignedUrl(item.image_path, 60);
     const photo = document.querySelector(`[data-image="${CSS.escape(item.id)}"]`);
     if (imageError) { imagePermissionError = true; return; }
     if (image?.signedUrl && photo) {
@@ -274,6 +307,7 @@ async function loadProducts(ownerId, own) {
 }
 
 async function openProfile(id) {
+  if (!eventProfilesOpen && !isAdmin && id !== profile.id) return toast('Los perfiles todavía están cerrados por el admin.');
   selectedProfile = profiles.find((person) => person.id === id);
   activeView = 'person';
   selectedWanted = [];
@@ -289,6 +323,10 @@ async function requestCatalog(recipientId) {
 }
 
 async function addProductModal() {
+  const { data: uploadedCount, error: countError } = await supabase.rpc('get_my_uploaded_product_count');
+  if (countError) return toast(countError.message);
+  if (uploadedCount >= 5) return toast('Ya alcanzaste el límite de 5 objetos subidos. Los objetos que recibas por intercambio no cuentan.');
+
   showModal(`<div class="modal-head"><div><div class="eyebrow">Mi catálogo</div><h2>Agregar producto</h2></div><button class="close" data-close aria-label="Cerrar">×</button></div><p>Escribe el nombre y toma una foto o elige una de tu galería.</p><label class="form-label" for="newProductName">Nombre</label><input class="field" id="newProductName" maxlength="80" placeholder="Ej. Taza de cerámica"><label class="form-label">Foto del objeto</label><div class="photo-actions"><button class="button-secondary" type="button" id="takePhotoButton">📷 Tomar foto</button><button class="button-secondary" type="button" id="choosePhotoButton">▧ Elegir de galería</button></div><input id="cameraPhotoInput" type="file" accept="image/*" capture="environment" hidden><input id="galleryPhotoInput" type="file" accept="image/*" hidden><div class="photo-preview" id="photoPreview">No has agregado una foto</div><div class="upload-status" id="uploadStatus" aria-live="polite"></div><div class="form-actions"><button class="button-primary" id="saveProductButton">Agregar a mi catálogo</button></div>`);
   document.querySelector('[data-close]').onclick = closeModal;
   let selectedPhoto = null;
@@ -413,7 +451,7 @@ async function buildTrade() {
 async function productsWithSignedImages(products) {
   const entries = await Promise.all(products.map(async (product) => {
     if (!product.image_path) return [product.id, { name: product.name, imageUrl: null }];
-    const { data, error } = await supabase.storage.from('product-images').createSignedUrl(product.image_path, 1800);
+    const { data, error } = await supabase.storage.from('product-images').createSignedUrl(product.image_path, 60);
     return [product.id, { name: product.name, imageUrl: error ? null : data?.signedUrl || null }];
   }));
   return new Map(entries);
@@ -519,6 +557,19 @@ async function refreshLiveData() {
   if (!profile || liveDataSyncBusy) return;
   liveDataSyncBusy = true;
   try {
+    const { data: openState, error: statusError } = await supabase.rpc('get_event_status');
+    if (!statusError && eventProfilesOpen !== Boolean(openState)) {
+      eventProfilesOpen = Boolean(openState);
+      if (!eventProfilesOpen && !isAdmin && selectedProfile?.id !== profile.id) {
+        selectedProfile = null;
+        activeView = 'people';
+        selectedWanted = [];
+        selectedAccessGranted = null;
+      }
+      const { data: refreshedProfiles } = await supabase.from('profiles').select('id, display_name').order('display_name');
+      if (refreshedProfiles) profiles = refreshedProfiles;
+      if (activeView !== 'admin') await renderSignedIn();
+    }
     const { data, error } = await supabase.from('profiles').select('id, display_name').order('display_name');
     if (!error && data) {
       const oldProfiles = profiles.map((person) => `${person.id}:${person.display_name}`).join('|');
@@ -557,6 +608,21 @@ async function startNoticeUpdates() {
     .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'profiles' }, () => refreshLiveData())
     .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'catalog_access', filter: `user_a=eq.${profile.id}` }, () => refreshLiveData())
     .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'catalog_access', filter: `user_b=eq.${profile.id}` }, () => refreshLiveData())
+    .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'event_settings', filter: 'singleton=eq.true' }, async (payload) => {
+      const nextState = Boolean(payload.new?.profiles_open);
+      if (eventProfilesOpen === nextState) return;
+      eventProfilesOpen = nextState;
+      if (!eventProfilesOpen && !isAdmin && selectedProfile?.id !== profile.id) {
+        selectedProfile = null;
+        activeView = 'people';
+        selectedWanted = [];
+        selectedAccessGranted = null;
+      }
+      const { data } = await supabase.from('profiles').select('id, display_name').order('display_name');
+      if (data) profiles = data;
+      if (activeView === 'admin') await renderAdminPanel();
+      else await renderSignedIn();
+    })
     .subscribe((status) => { if (status === 'SUBSCRIBED') refreshLiveData(); });
   noticePollTimer = setInterval(() => refreshNoticeCount(true), 6000);
   liveDataPollTimer = setInterval(refreshLiveData, 4000);
@@ -566,6 +632,9 @@ async function loadSignedInApp() {
   try {
     await loadProfile();
     await loadAdminStatus();
+    const { data: openState, error: statusError } = await supabase.rpc('get_event_status');
+    if (statusError) throw statusError;
+    eventProfilesOpen = Boolean(openState);
     shell();
     document.querySelector('#logoutButton')?.addEventListener('click', logout);
     const { data, error } = await supabase.from('profiles').select('id, display_name').order('display_name');
