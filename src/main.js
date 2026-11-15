@@ -110,7 +110,12 @@ async function loadProfile() {
   const { data, error } = await supabase.from('profiles').select('id, display_name').eq('id', session.user.id).maybeSingle();
   if (error) throw error;
   profile = data;
-  if (!profile) throw new Error('No encontramos tu perfil. Cierra sesión y vuelve a crear la cuenta.');
+  if (!profile) {
+    const { data: repairedProfile, error: repairError } = await supabase.rpc('ensure_my_profile');
+    if (repairError) throw new Error(`No encontramos tu perfil y no se pudo recuperar automáticamente. Ejecuta la migración 20261115000400_repair_missing_profile.sql en Supabase. Detalle: ${repairError.message}`);
+    profile = Array.isArray(repairedProfile) ? repairedProfile[0] : repairedProfile;
+  }
+  if (!profile) throw new Error('No se pudo recuperar tu perfil. Pulsa “Volver a intentar” después de aplicar la migración de reparación en Supabase.');
 }
 
 async function loadAdminStatus() {
@@ -276,12 +281,12 @@ async function loadProducts(ownerId, own) {
     return;
   }
   grid.innerHTML = visibleProducts.map((item) => `<article class="product"><div class="product-photo" data-image="${item.id}"><div class="product-emoji">📦</div><span class="available">● Disponible</span></div><div class="product-body"><div class="product-title">${esc(item.name)}</div><div class="product-owner">${own ? 'En tu catálogo' : `De ${esc(selectedProfile.display_name)}`}</div><div class="product-actions">${otherCatalog ? `<button class="pick ${selectedWanted.includes(item.id) ? 'selected' : ''}" data-want="${item.id}">${selectedWanted.includes(item.id) ? '✓ Elegido' : '+ Elegir'}</button>` : '<span class="person-type">Disponible</span>'}</div></div></article>`).join('');
-  let imagePermissionError = false;
+  let imagePermissionError = '';
   let imageLoadErrorShown = false;
   await Promise.all(visibleProducts.filter((product) => product.image_path).map(async (item) => {
     const { data: image, error: imageError } = await supabase.storage.from('product-images').createSignedUrl(item.image_path, 60);
     const photo = document.querySelector(`[data-image="${CSS.escape(item.id)}"]`);
-    if (imageError) { imagePermissionError = true; return; }
+    if (imageError) { imagePermissionError = imageError.message || 'Permiso denegado'; return; }
     if (image?.signedUrl && photo) {
       photo.innerHTML = `<img src="${esc(image.signedUrl)}" alt="${esc(item.name)}"><span class="available">● Disponible</span>`;
       photo.querySelector('img').onerror = () => {
@@ -293,7 +298,7 @@ async function loadProducts(ownerId, own) {
       };
     }
   }));
-  if (imagePermissionError) toast('No se pudo abrir una foto. Ejecuta la migración de permisos para fotos compartidas en Supabase.');
+  if (imagePermissionError) toast(`No se pudo abrir una foto: ${imagePermissionError}. Aplica la migración de permisos de fotos compartidas en Supabase.`);
   if (otherCatalog) {
     grid.querySelectorAll('[data-want]').forEach((button) => button.onclick = () => {
       selectedWanted = selectedWanted.includes(button.dataset.want) ? selectedWanted.filter((id) => id !== button.dataset.want) : [...selectedWanted, button.dataset.want];

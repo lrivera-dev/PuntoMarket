@@ -27,6 +27,7 @@ revoke all on function public.can_read_product_image(text) from public, anon;
 grant execute on function public.can_read_product_image(text) to authenticated;
 
 drop policy if exists "Users read images from their own folder" on storage.objects;
+drop policy if exists "Catalog partners can read product images" on storage.objects;
 create policy "Catalog partners can read product images"
   on storage.objects for select to authenticated
   using (
