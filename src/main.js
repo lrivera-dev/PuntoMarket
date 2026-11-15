@@ -6,7 +6,7 @@ let session = null;
 let profile = null;
 let profiles = [];
 let isAdmin = false;
-let eventProfilesOpen = false;
+let participantEnabled = false;
 let activeView = 'people';
 let selectedProfile = null;
 let visibleProducts = [];
@@ -129,6 +129,12 @@ async function loadAdminStatus() {
   isAdmin = Boolean(data);
 }
 
+async function loadParticipantAccess() {
+  const { data, error } = await supabase.rpc('get_my_participant_access');
+  if (error) throw error;
+  participantEnabled = Boolean(data);
+}
+
 function shell() {
   app.innerHTML = `<header class="topbar"><div class="brand"><span class="brand-mark">↗</span>Punto Market</div><div class="top-actions"><span class="top-label">PRUEBA LOCAL</span><button class="top-button" id="noticesButton">Avisos <span id="noticeCount"></span></button><button class="avatar" id="accountButton" title="Cuenta y cerrar sesión">${esc(initials(profile.display_name))}</button></div></header>
   <main class="shell main"><section class="hero"><div><div class="eyebrow">Intercambia en persona</div><h1>Las cosas encuentran<br>nuevas manos.</h1><p>Explora los catálogos y propón intercambios por los objetos que te interesen.</p></div><button class="button-primary" id="addProductButton">＋ Agregar producto</button></section>
@@ -185,8 +191,8 @@ async function renderSignedIn() {
   if (!selectedProfile) {
     title.textContent = 'Elige un perfil';
     count.textContent = '';
-    grid.innerHTML = !eventProfilesOpen && !isAdmin
-      ? '<div class="empty">Los perfiles y catálogos estarán disponibles cuando el admin abra el evento. Mientras tanto, puedes preparar el tuyo desde “Mi catálogo”.</div>'
+    grid.innerHTML = !participantEnabled && !isAdmin
+      ? '<div class="empty">Tu catálogo está en preparación. El admin habilitará tu acceso cuando reciba tus objetos.</div>'
       : '<div class="empty">Abre un perfil para ver su catálogo. Si te interesa un objeto, selecciónalo para proponer un intercambio.</div>';
     return;
   }
@@ -196,9 +202,9 @@ async function renderSignedIn() {
     return;
   }
   title.textContent = `Catálogo de ${selectedProfile.display_name}`;
-  if (!eventProfilesOpen && !isAdmin) {
+  if (!participantEnabled && !isAdmin) {
     count.textContent = '';
-    grid.innerHTML = '<div class="empty">Los catálogos estarán disponibles cuando el admin abra el evento.</div>';
+    grid.innerHTML = '<div class="empty">Tu acceso todavía está pendiente de habilitación por el admin.</div>';
     return;
   }
   await loadProducts(selectedProfile.id, false);
@@ -209,18 +215,17 @@ async function renderAdminPanel() {
   if (!panel || !isAdmin) return;
   const hasContent = Boolean(panel.innerHTML.trim());
   if (!hasContent) panel.innerHTML = '<section class="auth-card"><p class="hint">Cargando panel…</p></section>';
-  const [{ data, error }, { data: openState, error: stateError }, { data: productRows, error: productsError }] = await Promise.all([
+  const [{ data, error }, { data: productRows, error: productsError }, { data: accessRows, error: accessError }] = await Promise.all([
     supabase.rpc('get_admin_exchange_stats'),
-    supabase.rpc('get_event_status'),
-    supabase.from('products').select('owner_id, name').order('created_at', { ascending: false })
+    supabase.from('products').select('owner_id, name').order('created_at', { ascending: false }),
+    supabase.from('participant_access').select('user_id, enabled')
   ]);
-  if (stateError || productsError) {
-    const problem = stateError || productsError;
+  if (productsError || accessError) {
+    const problem = productsError || accessError;
     panel.innerHTML = `<section class="auth-card"><h2>No se pudo cargar el panel</h2><p class="error">${esc(problem.message)}</p><button class="button-secondary" id="refreshAdminPanel">Reintentar</button></section>`;
     panel.querySelector('#refreshAdminPanel').onclick = renderAdminPanel;
     return;
   }
-  eventProfilesOpen = Boolean(openState);
   if (error) {
     panel.innerHTML = `<section class="auth-card"><h2>No se pudo cargar el panel</h2><p class="error">${esc(error.message)}</p><button class="button-secondary" id="refreshAdminPanel">Reintentar</button></section>`;
     panel.querySelector('#refreshAdminPanel').onclick = renderAdminPanel;
@@ -231,22 +236,21 @@ async function renderAdminPanel() {
   const totalExchanges = Math.floor(totalByProfile / 2);
   const itemCounts = new Map();
   for (const item of productRows || []) itemCounts.set(item.owner_id, (itemCounts.get(item.owner_id) || 0) + 1);
-  panel.innerHTML = `<div class="admin-heading"><div><div class="eyebrow">Administración</div><h1>Control del evento</h1><p>${eventProfilesOpen ? 'Los perfiles están abiertos para todos.' : 'Los participantes pueden preparar sus catálogos; solo tú puedes revisar perfiles y objetos.'}</p></div><button class="button-primary" id="toggleProfilesButton">${eventProfilesOpen ? 'Cerrar perfiles para todos' : 'Abrir perfiles para todos'}</button></div><div class="admin-summary"><article><span>Total de intercambios</span><strong>${totalExchanges}</strong></article><article><span>Participantes</span><strong>${rows.length}</strong></article></div><h2>Perfiles y objetos</h2><div class="admin-table-wrap"><table class="admin-table"><thead><tr><th>Participante</th><th>Objetos en su catálogo</th><th>Revisión</th></tr></thead><tbody>${rows.map((row) => `<tr><td>${esc(row.display_name)}</td><td>${itemCounts.get(row.profile_id) || 0}</td><td><button class="button-secondary" data-admin-profile="${row.profile_id}">Ver catálogo</button></td></tr>`).join('') || '<tr><td colspan="3">Aún no hay perfiles.</td></tr>'}</tbody></table></div><h2 style="margin-top:24px">Intercambios realizados</h2><div class="admin-table-wrap"><table class="admin-table"><thead><tr><th>Participante</th><th>Intercambios realizados</th></tr></thead><tbody>${rows.map((row) => `<tr><td>${esc(row.display_name)}</td><td><b>${Number(row.completed_exchanges || 0)}</b></td></tr>`).join('') || '<tr><td colspan="2">Aún no hay perfiles.</td></tr>'}</tbody></table></div><div style="margin-top:14px"><button class="button-secondary" id="refreshAdminPanel">↻ Actualizar</button></div>`;
+  const enabledIds = new Set((accessRows || []).filter((entry) => entry.enabled).map((entry) => entry.user_id));
+  panel.innerHTML = `<div class="admin-heading"><div><div class="eyebrow">Administración</div><h1>Control del evento</h1><p>Revisa los objetos recibidos y habilita a cada persona cuando los hayas recibido físicamente. Solo los participantes habilitados podrán ver los perfiles y catálogos de otros habilitados.</p></div><button class="button-secondary" id="refreshAdminPanel">↻ Actualizar</button></div><div class="admin-summary"><article><span>Total de intercambios</span><strong>${totalExchanges}</strong></article><article><span>Participantes</span><strong>${rows.length}</strong></article></div><h2>Perfiles y objetos</h2><div class="admin-table-wrap"><table class="admin-table"><thead><tr><th>Participante</th><th>Objetos en su catálogo</th><th>Acceso</th><th>Revisión</th></tr></thead><tbody>${rows.map((row) => { const enabled = enabledIds.has(row.profile_id); return `<tr><td>${esc(row.display_name)}</td><td>${itemCounts.get(row.profile_id) || 0}</td><td><b>${enabled ? 'Habilitado' : 'Pendiente'}</b></td><td><button class="button-secondary" data-admin-profile="${row.profile_id}">Ver catálogo</button> <button class="${enabled ? 'button-secondary' : 'button-primary'}" data-toggle-participant="${row.profile_id}" data-enabled="${enabled}">${enabled ? 'Deshabilitar acceso' : 'Habilitar acceso'}</button></td></tr>`; }).join('') || '<tr><td colspan="4">Aún no hay perfiles.</td></tr>'}</tbody></table></div><h2 style="margin-top:24px">Intercambios realizados</h2><div class="admin-table-wrap"><table class="admin-table"><thead><tr><th>Participante</th><th>Intercambios realizados</th></tr></thead><tbody>${rows.map((row) => `<tr><td>${esc(row.display_name)}</td><td><b>${Number(row.completed_exchanges || 0)}</b></td></tr>`).join('') || '<tr><td colspan="2">Aún no hay perfiles.</td></tr>'}</tbody></table></div>`;
   panel.querySelector('#refreshAdminPanel').onclick = renderAdminPanel;
-  panel.querySelector('#toggleProfilesButton').onclick = async (event) => {
-    const button = event.currentTarget;
+  panel.querySelectorAll('[data-toggle-participant]').forEach((button) => button.onclick = async () => {
     button.disabled = true;
-    const { data: nextState, error: toggleError } = await supabase.rpc('set_event_profiles_open', { p_open: !eventProfilesOpen });
-    if (toggleError) {
-      button.disabled = false;
-      return toast(toggleError.message);
-    }
-    eventProfilesOpen = Boolean(nextState);
+    const enabled = button.dataset.enabled !== 'true';
+    const { error: toggleError } = await supabase.rpc('set_participant_access', { p_user_id: button.dataset.toggleParticipant, p_enabled: enabled });
+    if (toggleError) { button.disabled = false; return toast(toggleError.message); }
+    if (button.dataset.toggleParticipant === profile.id) participantEnabled = enabled;
     const { data: updatedProfiles } = await supabase.from('profiles').select('id, display_name').order('display_name');
     if (updatedProfiles) profiles = updatedProfiles;
-    toast(eventProfilesOpen ? 'Perfiles abiertos para todos.' : 'Perfiles cerrados para los participantes.');
-    await renderAdminPanel();
-  };
+    toast(`${profiles.find((item) => item.id === button.dataset.toggleParticipant)?.display_name || 'Participante'} ${enabled ? 'habilitado' : 'deshabilitado'}.`);
+    if (button.dataset.toggleParticipant === profile.id) await renderSignedIn();
+    else await renderAdminPanel();
+  });
   panel.querySelectorAll('[data-admin-profile]').forEach((button) => button.onclick = () => openProfile(button.dataset.adminProfile));
 }
 
@@ -299,7 +303,7 @@ async function loadProducts(ownerId, own) {
 }
 
 async function openProfile(id) {
-  if (!eventProfilesOpen && !isAdmin && id !== profile.id) return toast('Los perfiles todavía están cerrados por el admin.');
+  if (!participantEnabled && !isAdmin && id !== profile.id) return toast('El admin todavía no habilita tu acceso a los perfiles.');
   selectedProfile = profiles.find((person) => person.id === id);
   activeView = 'person';
   selectedWanted = [];
@@ -529,10 +533,10 @@ async function refreshLiveData() {
   if (!profile || liveDataSyncBusy) return;
   liveDataSyncBusy = true;
   try {
-    const { data: openState, error: statusError } = await supabase.rpc('get_event_status');
-    if (!statusError && eventProfilesOpen !== Boolean(openState)) {
-      eventProfilesOpen = Boolean(openState);
-      if (!eventProfilesOpen && !isAdmin && selectedProfile?.id !== profile.id) {
+    const { data: accessState, error: accessError } = await supabase.rpc('get_my_participant_access');
+    if (!accessError && participantEnabled !== Boolean(accessState)) {
+      participantEnabled = Boolean(accessState);
+      if (!participantEnabled && !isAdmin && selectedProfile?.id !== profile.id) {
         selectedProfile = null;
         activeView = 'people';
         selectedWanted = [];
@@ -547,8 +551,15 @@ async function refreshLiveData() {
       const newProfiles = data.map((person) => `${person.id}:${person.display_name}`).join('|');
       if (oldProfiles !== newProfiles) {
         profiles = data;
-        renderPeople();
-        if (activeView === 'admin') renderAdminPanel();
+        if (selectedProfile && selectedProfile.id !== profile.id && !profiles.some((person) => person.id === selectedProfile.id)) {
+          selectedProfile = null;
+          activeView = 'people';
+          selectedWanted = [];
+          await renderSignedIn();
+        } else {
+          renderPeople();
+          if (activeView === 'admin') renderAdminPanel();
+        }
       }
     }
 
@@ -569,19 +580,9 @@ async function startNoticeUpdates() {
       refreshNoticeCount(false);
     })
     .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'profiles' }, () => refreshLiveData())
-    .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'event_settings', filter: 'singleton=eq.true' }, async (payload) => {
-      const nextState = Boolean(payload.new?.profiles_open);
-      if (eventProfilesOpen === nextState) return;
-      eventProfilesOpen = nextState;
-      if (!eventProfilesOpen && !isAdmin && selectedProfile?.id !== profile.id) {
-        selectedProfile = null;
-        activeView = 'people';
-        selectedWanted = [];
-      }
-      const { data } = await supabase.from('profiles').select('id, display_name').order('display_name');
-      if (data) profiles = data;
-      if (activeView === 'admin') await renderAdminPanel();
-      else await renderSignedIn();
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'participant_access' }, async () => {
+      await refreshLiveData();
+      if (isAdmin && activeView === 'admin') await renderAdminPanel();
     })
     .subscribe((status) => { if (status === 'SUBSCRIBED') refreshLiveData(); });
   noticePollTimer = setInterval(() => refreshNoticeCount(true), 6000);
@@ -592,9 +593,7 @@ async function loadSignedInApp() {
   try {
     await loadProfile();
     await loadAdminStatus();
-    const { data: openState, error: statusError } = await supabase.rpc('get_event_status');
-    if (statusError) throw statusError;
-    eventProfilesOpen = Boolean(openState);
+    await loadParticipantAccess();
     shell();
     document.querySelector('#logoutButton')?.addEventListener('click', logout);
     const { data, error } = await supabase.from('profiles').select('id, display_name').order('display_name');
