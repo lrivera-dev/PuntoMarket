@@ -281,7 +281,11 @@ async function loadProducts(ownerId, own) {
       };
     }
   }));
-  if (imagePermissionError) toast(`No se pudo abrir una foto: ${imagePermissionError}. Aplica la migración de permisos de fotos compartidas en Supabase.`);
+  if (imagePermissionError?.toLowerCase().includes('object not found')) {
+    toast('No se encontró la foto en Storage. Si el objeto llegó por intercambio, aplica la migración 20261115000700 en Supabase; si continúa, habrá que volver a subir la foto.');
+  } else if (imagePermissionError) {
+    toast(`No se pudo abrir una foto: ${imagePermissionError}. Revisa los permisos de Storage en Supabase.`);
+  }
   if (otherCatalog) {
     grid.querySelectorAll('[data-want]').forEach((button) => button.onclick = () => {
       selectedWanted = selectedWanted.includes(button.dataset.want) ? selectedWanted.filter((id) => id !== button.dataset.want) : [...selectedWanted, button.dataset.want];
