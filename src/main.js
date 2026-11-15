@@ -20,12 +20,10 @@ let noticePollTimer = null;
 let lastNoticeCount = null;
 let liveDataPollTimer = null;
 let liveDataSyncBusy = false;
-let selectedAccessGranted = null;
 let adminRefreshTimer = null;
 
 const esc = (value = '') => String(value).replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
 const initials = (name = '?') => name.split(/\s+/).map((part) => part[0]).join('').slice(0, 2).toUpperCase();
-const pair = (a, b) => [a, b].sort();
 
 function toast(message) {
   clearTimeout(toastTimer);
@@ -133,7 +131,7 @@ async function loadAdminStatus() {
 
 function shell() {
   app.innerHTML = `<header class="topbar"><div class="brand"><span class="brand-mark">↗</span>Punto Market</div><div class="top-actions"><span class="top-label">PRUEBA LOCAL</span><button class="top-button" id="noticesButton">Avisos <span id="noticeCount"></span></button><button class="avatar" id="accountButton" title="Cuenta y cerrar sesión">${esc(initials(profile.display_name))}</button></div></header>
-  <main class="shell main"><section class="hero"><div><div class="eyebrow">Intercambia en persona</div><h1>Las cosas encuentran<br>nuevas manos.</h1><p>Muestra tu catálogo. Si te interesa el de alguien, pídele permiso para verlo.</p></div><button class="button-primary" id="addProductButton">＋ Agregar producto</button></section>
+  <main class="shell main"><section class="hero"><div><div class="eyebrow">Intercambia en persona</div><h1>Las cosas encuentran<br>nuevas manos.</h1><p>Explora los catálogos y propón intercambios por los objetos que te interesen.</p></div><button class="button-primary" id="addProductButton">＋ Agregar producto</button></section>
   <nav class="tabs"><button class="tab active" id="peopleTab">Personas</button><button class="tab" id="myCatalogTab">Mi catálogo</button>${isAdmin ? '<button class="tab" id="adminTab">Admin</button>' : ''}</nav>
   <div class="toolbar"><label class="search"><input id="profileSearch" placeholder="Buscar personas…" autocomplete="off"></label></div>
   <div class="section-head" id="participantsHead"><h2>Participantes</h2><span class="count" id="profileCount"></span></div><section class="people" id="peopleList"></section>
@@ -157,13 +155,6 @@ function renderPeople() {
   document.querySelector('#profileCount').textContent = `${matches.length} perfiles`;
   list.innerHTML = matches.map((person) => `<button class="person ${activeView === 'person' && selectedProfile?.id === person.id ? 'active' : ''}" data-profile="${person.id}"><span class="avatar">${esc(initials(person.display_name))}</span><span class="person-info"><span class="person-name">${esc(person.display_name)}${person.id === profile.id ? ' · Tú' : ''}</span><span class="person-type">${person.id === profile.id ? 'Tu perfil' : 'Participante'}</span></span></button>`).join('') || '<div class="hint">No encontramos perfiles.</div>';
   list.querySelectorAll('[data-profile]').forEach((button) => button.onclick = () => openProfile(button.dataset.profile));
-}
-
-async function accessFor(userId) {
-  const [a, b] = pair(profile.id, userId);
-  const { data, error } = await supabase.from('catalog_access').select('user_a').eq('user_a', a).eq('user_b', b).maybeSingle();
-  if (error) throw error;
-  return Boolean(data);
 }
 
 async function renderSignedIn() {
@@ -196,8 +187,8 @@ async function renderSignedIn() {
     title.textContent = 'Elige un perfil';
     count.textContent = '';
     grid.innerHTML = !eventProfilesOpen && !isAdmin
-      ? '<div class="empty">Los perfiles estarán disponibles cuando el admin abra el evento. Mientras tanto, puedes preparar tu catálogo desde “Mi catálogo”.</div>'
-      : '<div class="empty">Aquí solo aparecen perfiles. Abre el tuyo para mostrar tus objetos, o entra al perfil de alguien para pedir permiso para ver su catálogo.</div>';
+      ? '<div class="empty">Los perfiles y catálogos estarán disponibles cuando el admin abra el evento. Mientras tanto, puedes preparar el tuyo desde “Mi catálogo”.</div>'
+      : '<div class="empty">Abre un perfil para ver su catálogo. Si te interesa un objeto, selecciónalo para proponer un intercambio.</div>';
     return;
   }
   if (selectedProfile.id === profile.id) {
@@ -206,17 +197,9 @@ async function renderSignedIn() {
     return;
   }
   title.textContent = `Catálogo de ${selectedProfile.display_name}`;
-  let allowed = isAdmin;
-  if (!isAdmin) {
-    try { allowed = await accessFor(selectedProfile.id); } catch (error) { return showGridError(error); }
-  }
-  selectedAccessGranted = allowed;
-  if (!allowed) {
+  if (!eventProfilesOpen && !isAdmin) {
     count.textContent = '';
-    const { data: pending, error } = await supabase.from('catalog_requests').select('id').eq('requester_id', profile.id).eq('recipient_id', selectedProfile.id).eq('status', 'pending').maybeSingle();
-    if (error) return showGridError(error);
-    grid.innerHTML = `<div class="empty">El catálogo de ${esc(selectedProfile.display_name)} está privado.<br><button class="button-primary" id="requestCatalogButton" ${pending ? 'disabled' : ''} style="margin-top:12px">${pending ? 'Solicitud enviada · Esperando respuesta' : 'Pedir permiso para verlo'}</button></div>`;
-    if (!pending) document.querySelector('#requestCatalogButton').onclick = () => requestCatalog(selectedProfile.id);
+    grid.innerHTML = '<div class="empty">Los catálogos estarán disponibles cuando el admin abra el evento.</div>';
     return;
   }
   await loadProducts(selectedProfile.id, false);
@@ -316,14 +299,6 @@ async function openProfile(id) {
   selectedProfile = profiles.find((person) => person.id === id);
   activeView = 'person';
   selectedWanted = [];
-  selectedAccessGranted = null;
-  await renderSignedIn();
-}
-
-async function requestCatalog(recipientId) {
-  const { error } = await supabase.from('catalog_requests').insert({ requester_id: profile.id, recipient_id: recipientId });
-  if (error) return toast(error.message);
-  toast('Solicitud enviada. Espera a que la otra persona la acepte.');
   await renderSignedIn();
 }
 
@@ -472,14 +447,10 @@ function renderProductThumbs(products) {
 }
 
 async function openNotices() {
-  const [requestsResult, proposalsResult] = await Promise.all([
-    supabase.from('catalog_requests').select('id, requester_id, created_at').eq('recipient_id', profile.id).eq('status', 'pending').order('created_at', { ascending: false }),
-    supabase.from('exchange_proposals').select('id, proposer_id, created_at').eq('recipient_id', profile.id).eq('status', 'pending').order('created_at', { ascending: false }),
-  ]);
-  if (requestsResult.error || proposalsResult.error) return toast((requestsResult.error || proposalsResult.error).message);
-  const requests = requestsResult.data || [];
+  const proposalsResult = await supabase.from('exchange_proposals').select('id, proposer_id, created_at').eq('recipient_id', profile.id).eq('status', 'pending').order('created_at', { ascending: false });
+  if (proposalsResult.error) return toast(proposalsResult.error.message);
   const proposals = proposalsResult.data || [];
-  const ids = [...new Set([...requests.map((item) => item.requester_id), ...proposals.map((item) => item.proposer_id)])];
+  const ids = [...new Set(proposals.map((item) => item.proposer_id))];
   const people = profiles.filter((item) => ids.includes(item.id));
   const proposerItems = proposals.length ? await supabase.from('exchange_proposal_items').select('proposal_id, product_id, side').in('proposal_id', proposals.map((item) => item.id)) : { data: [] };
   if (proposerItems.error) return toast(proposerItems.error.message);
@@ -487,15 +458,10 @@ async function openNotices() {
   const productsResult = productIds.length ? await supabase.from('products').select('id, name, image_path').in('id', productIds) : { data: [] };
   if (productsResult.error) return toast(productsResult.error.message);
   const productMap = await productsWithSignedImages(productsResult.data || []);
-  showModal(`<div class="modal-head"><div><div class="eyebrow">Avisos</div><h2>Solicitudes</h2></div><button class="close" data-close aria-label="Cerrar">×</button></div><p>Responde a quien pidió ver tu catálogo o revisa las propuestas de intercambio.</p>
-    ${requests.length ? '<label class="form-label">Pedir ver tu catálogo</label>' : ''}
-    ${requests.map((request) => { const person = people.find((item) => item.id === request.requester_id); return `<div class="notice-row"><div class="avatar">${esc(initials(person?.display_name))}</div><div class="notice-text"><b>${esc(person?.display_name || 'Participante')}</b><small>Quiere ver tu catálogo</small></div><div class="notice-actions"><button class="button-primary accept" data-accept-access="${request.id}">Aceptar</button><button class="cancel-text" data-decline-access="${request.id}">Cancelar</button></div></div>`; }).join('')}
-    ${proposals.length ? '<label class="form-label">Propuestas de intercambio</label>' : ''}
+  showModal(`<div class="modal-head"><div><div class="eyebrow">Avisos</div><h2>Propuestas de intercambio</h2></div><button class="close" data-close aria-label="Cerrar">×</button></div><p>Revisa y responde a las propuestas que te hicieron.</p>
     ${proposals.map((proposal) => { const person = people.find((item) => item.id === proposal.proposer_id); const items = (proposerItems.data || []).filter((item) => item.proposal_id === proposal.id); const offered = items.filter((item) => item.side === 'offered').map((item) => productMap.get(item.product_id)).filter(Boolean); const wanted = items.filter((item) => item.side === 'wanted').map((item) => productMap.get(item.product_id)).filter(Boolean); return `<button class="choice proposal-choice" data-open-proposal="${proposal.id}"><span class="proposal-person"><b>${esc(person?.display_name || 'Participante')}</b><small>Propuesta de intercambio</small></span><span class="proposal-preview">${renderProductThumbs(offered)}<span class="proposal-arrow">⇄</span>${renderProductThumbs(wanted)}</span></button>`; }).join('')}
-    ${!requests.length && !proposals.length ? '<div class="empty">No tienes solicitudes pendientes.</div>' : ''}`);
+    ${!proposals.length ? '<div class="empty">No tienes propuestas pendientes.</div>' : ''}`);
   document.querySelector('[data-close]').onclick = closeModal;
-  document.querySelectorAll('[data-accept-access]').forEach((button) => button.onclick = async () => { button.disabled = true; const { error } = await supabase.rpc('respond_catalog_request', { p_request_id: button.dataset.acceptAccess, p_accept: true }); if (error) return showError(document.querySelector('.modal'), error); closeModal(); toast('Ya pueden ver sus catálogos.'); await openNotices(); });
-  document.querySelectorAll('[data-decline-access]').forEach((button) => button.onclick = async () => { const { error } = await supabase.rpc('respond_catalog_request', { p_request_id: button.dataset.declineAccess, p_accept: false }); if (error) return showError(document.querySelector('.modal'), error); closeModal(); await openNotices(); });
   document.querySelectorAll('[data-open-proposal]').forEach((button) => button.onclick = () => openProposal(button.dataset.openProposal));
 }
 
@@ -523,7 +489,7 @@ async function answerProposal(proposalId, accept) {
   const { error } = await supabase.rpc('respond_exchange_proposal', { p_proposal_id: proposalId, p_accept: accept });
   if (error) return showError(document.querySelector('.modal'), error);
   closeModal();
-  toast(accept ? 'Intercambio confirmado. El acceso al catálogo se cerró.' : 'Propuesta cancelada.');
+  toast(accept ? 'Intercambio confirmado. Los catálogos siguen disponibles mientras el evento esté abierto.' : 'Propuesta cancelada.');
   await renderSignedIn();
 }
 
@@ -531,16 +497,13 @@ async function logout() { stopNoticeUpdates(); closeModal(); await supabase.auth
 
 async function refreshNoticeCount(announce = false) {
   if (!profile) return;
-  const [requests, proposals] = await Promise.all([
-    supabase.from('catalog_requests').select('id', { count: 'exact', head: true }).eq('recipient_id', profile.id).eq('status', 'pending'),
-    supabase.from('exchange_proposals').select('id', { count: 'exact', head: true }).eq('recipient_id', profile.id).eq('status', 'pending'),
-  ]);
-  if (requests.error || proposals.error) return;
-  const total = (requests.count || 0) + (proposals.count || 0);
+  const { count, error } = await supabase.from('exchange_proposals').select('id', { count: 'exact', head: true }).eq('recipient_id', profile.id).eq('status', 'pending');
+  if (error) return;
+  const total = count || 0;
   const badge = document.querySelector('#noticeCount');
   if (badge) badge.textContent = total ? ` · ${total}` : '';
   if (announce && lastNoticeCount !== null && total > lastNoticeCount) {
-    toast('Tienes una nueva solicitud o propuesta. Revisa Avisos.');
+    toast('Tienes una nueva propuesta de intercambio. Revisa Avisos.');
     if (navigator.vibrate) navigator.vibrate(120);
   }
   lastNoticeCount = total;
@@ -569,7 +532,6 @@ async function refreshLiveData() {
         selectedProfile = null;
         activeView = 'people';
         selectedWanted = [];
-        selectedAccessGranted = null;
       }
       const { data: refreshedProfiles } = await supabase.from('profiles').select('id, display_name').order('display_name');
       if (refreshedProfiles) profiles = refreshedProfiles;
@@ -585,10 +547,6 @@ async function refreshLiveData() {
       }
     }
 
-    if (activeView === 'person' && selectedProfile && selectedProfile.id !== profile.id && selectedAccessGranted !== true) {
-      const hasAccess = await accessFor(selectedProfile.id);
-      if (hasAccess) await renderSignedIn();
-    }
   } catch (error) {
     console.warn('No se pudo actualizar la lista en vivo.', error);
   } finally {
@@ -600,19 +558,12 @@ async function startNoticeUpdates() {
   stopNoticeUpdates();
   await refreshNoticeCount(false);
   noticeChannel = supabase.channel(`notices-${profile.id}`)
-    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'catalog_requests', filter: `recipient_id=eq.${profile.id}` }, () => {
-      toast('Nueva solicitud para ver tu catálogo. Revisa Avisos.');
-      if (navigator.vibrate) navigator.vibrate(120);
-      refreshNoticeCount(false);
-    })
     .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'exchange_proposals', filter: `recipient_id=eq.${profile.id}` }, () => {
       toast('Nueva propuesta de intercambio. Revisa Avisos.');
       if (navigator.vibrate) navigator.vibrate(120);
       refreshNoticeCount(false);
     })
     .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'profiles' }, () => refreshLiveData())
-    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'catalog_access', filter: `user_a=eq.${profile.id}` }, () => refreshLiveData())
-    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'catalog_access', filter: `user_b=eq.${profile.id}` }, () => refreshLiveData())
     .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'event_settings', filter: 'singleton=eq.true' }, async (payload) => {
       const nextState = Boolean(payload.new?.profiles_open);
       if (eventProfilesOpen === nextState) return;
@@ -621,7 +572,6 @@ async function startNoticeUpdates() {
         selectedProfile = null;
         activeView = 'people';
         selectedWanted = [];
-        selectedAccessGranted = null;
       }
       const { data } = await supabase.from('profiles').select('id, display_name').order('display_name');
       if (data) profiles = data;
